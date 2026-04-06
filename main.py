@@ -13,52 +13,61 @@ app.add_middleware(CORSMiddleware,
     allow_headers=["*"]
 )
 
-model = YOLO("best.pt")
+try:
+    model = YOLO("best.pt")
+    print("✅ Model loaded successfully")
+    print(f"✅ Classes: {model.names}")
+except Exception as e:
+    print(f"❌ Model loading failed: {e}")
+    model = None
 
 @app.post("/detect")
 async def detect(file: UploadFile = File(...)):
-    img_bytes = await file.read()
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    
-    # Run YOLOv11 + SAM2 inference
-    results = model(img)
-    
-    detections = []
-    for result in results:
-        boxes = result.boxes
-        masks = result.masks  # SAM2 segmentation masks
+    try:
+        img_bytes = await file.read()
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        
+        if model is None:
+            return {"error": "Model not loaded", "detections": [], "count": 0}
 
-        for i, box in enumerate(boxes):
-            det = {
-                "label": model.names[int(box.cls)],
-                "confidence": round(float(box.conf), 2),
-                "bbox": box.xyxy[0].tolist()
-            }
-            # Add mask if available
-            if masks is not None and i < len(masks):
-                mask_array = masks.data[i].cpu().numpy()
-                det["has_mask"] = True
-            else:
-                det["has_mask"] = False
-            detections.append(det)
+        results = model(img)
+        
+        detections = []
+        for result in results:
+            boxes = result.boxes
+            masks = result.masks
 
-    # Generate annotated image with masks + boxes
-    annotated = results[0].plot(
-        masks=True,    # show SAM2 masks
-        boxes=True,    # show bounding boxes
-        labels=True,   # show labels
-        conf=True      # show confidence
-    )
+            for i, box in enumerate(boxes):
+                det = {
+                    "label": model.names[int(box.cls)],
+                    "confidence": round(float(box.conf), 2),
+                    "bbox": box.xyxy[0].tolist()
+                }
+                if masks is not None and i < len(masks):
+                    det["has_mask"] = True
+                else:
+                    det["has_mask"] = False
+                detections.append(det)
 
-    pil_img = Image.fromarray(annotated)
-    buf = io.BytesIO()
-    pil_img.save(buf, format="JPEG")
-    img_base64 = base64.b64encode(buf.getvalue()).decode()
+        annotated = results[0].plot()
+        pil_img = Image.fromarray(annotated)
+        buf = io.BytesIO()
+        pil_img.save(buf, format="JPEG")
+        img_base64 = base64.b64encode(buf.getvalue()).decode()
 
-    return {
-        "detections": detections,
-        "count": len(detections),
-        "annotated_image": img_base64
-    }
+        return {
+            "detections": detections,
+            "count": len(detections),
+            "annotated_image": img_base64
+        }
+
+    except Exception as e:
+        print(f"❌ Detection error: {e}")
+        return {
+            "error": str(e),
+            "detections": [],
+            "count": 0,
+            "annotated_image": None
+        }
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
